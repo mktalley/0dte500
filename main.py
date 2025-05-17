@@ -5,13 +5,11 @@ import os
 import csv
 import time
 import argparse
-import requests
 import numpy as np
 from datetime import datetime, date, time as dt_time, timedelta
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
-import smtplib
-from email.mime.text import MIMEText
+
 from scipy.stats import norm
 from scipy.optimize import brentq
 
@@ -28,21 +26,24 @@ API_KEY = os.getenv("ALPACA_API_KEY")
 API_SECRET = os.getenv("ALPACA_SECRET_KEY")
 PAPER = False  # LIVE trading mode
 
-CAPITAL_POOL = 500
-MAX_RISK_PER_TRADE = 100
-MAX_OPEN_SPREADS = max(1, CAPITAL_POOL // MAX_RISK_PER_TRADE)  # Max spreads based on capital
-MIN_CREDIT_PCT = 0.1
+# Risk and capital settings
+MAX_RISK_PER_TRADE = 100  # $ risk per spread
+MAX_OPEN_SPREADS = 5  # Hard cap on concurrent spreads based on $500 capital
+
+# Dynamic sizing will respect cash balance (cash // MAX_RISK_PER_TRADE) up to MAX_OPEN_SPREADS
+MIN_CREDIT_PCT = 0.1  # Minimum credit as a percentage of spread width
+ABS_MIN_CREDIT = 0.1  # Absolute minimum credit per spread
 OI_THRESHOLD = 300
 SHORT_DELTA_RANGE = (-0.45, -0.35)
 LONG_DELTA_RANGE = (-0.25, -0.15)
 STRIKE_RANGE = 0.1
 SCAN_INTERVAL = 600  # seconds between scans
 TIMEZONE = ZoneInfo("America/New_York")
-CANCEL_TIME = dt_time(15, 55)
-SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
+# Stop submissions at Alpaca's cutoff
+CANCEL_TIME = dt_time(15, 30)  # 3:30 PM EST
 
 # Static tickers
-TICKERS = ["SPY", "QQQ", "IWM"]  # Focus on liquid ETFs to maximize liquidity and profit potential
+TICKERS = ["SPY", "QQQ", "DIA"]
 
 # CLI args
 parser = argparse.ArgumentParser("0DTE Trading Bot")
@@ -78,38 +79,26 @@ def log(msg):
     print(f"[{datetime.now(TIMEZONE).strftime('%Y-%m-%d %H:%M:%S')}] {msg}")
 
 def send_alert(subject, body):
-    if SLACK_WEBHOOK_URL:
-        try:
-            requests.post(SLACK_WEBHOOK_URL, json={"text": f"{subject}\n{body}"})
-        except Exception as e:
-            log(f"Slack alert failed: {e}")
-    else:
-        try:
-            msg = MIMEText(body)
-            msg["Subject"] = subject
-            msg["From"] = os.getenv("EMAIL_ADDRESS")
-            msg["To"] = os.getenv("TO_EMAIL")
-            server = smtplib.SMTP_SSL("smtp.gmail.com", 465)
-            server.login(os.getenv("EMAIL_ADDRESS"), os.getenv("EMAIL_PASSWORD"))
-            server.sendmail(msg["From"], [msg["To"]], msg.as_string())
-            server.quit()
-        except Exception as e:
-            log(f"Email alert failed: {e}")
+    # Simple alert - log only
+    log(f"{subject}: {body}")
 
 
 def calculate_iv(price, S, K, T, r, opt_type):
     intrinsic = max(0, (S - K) if opt_type == "call" else (K - S))
     if price <= intrinsic:
         return 0.0
+
     def f(sigma):
         d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
         d2 = d1 - sigma * np.sqrt(T)
         if opt_type == "call":
             return S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2) - price
-        return K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1) - price
+        else:
+            return K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1) - price
+
     try:
         return brentq(f, 1e-6, 5.0)
-    except:
+    except Exception:
         return None
 
 
@@ -136,7 +125,7 @@ def get_prices(tickers):
         log(f"Price fetch failed: {e}")
         return {}
 
-# Fetch 0DTE options
+# Fetch same-day 0DTE options only
 def get_0dte_options(sym):
     spot = get_prices([sym]).get(sym)
     if not spot:
@@ -157,23 +146,6 @@ def get_0dte_options(sym):
     if len(opts) < 5:
         time.sleep(1)
         opts = trade_client.get_option_contracts(req).option_contracts
-    # Fallback to next-day expiry if no same-day options
-    if not opts:
-        fallback_date = today + timedelta(days=1)
-        log(f"[{sym}] No same-day expirations on {today}, falling back to {fallback_date}")
-        req2 = GetOptionContractsRequest(
-            underlying_symbols=[sym],
-            strike_price_gte=lo,
-            strike_price_lte=hi,
-            expiration_date=fallback_date,
-            status=AssetStatus.ACTIVE,
-            root_symbol=sym,
-            type=ContractType.PUT
-        )
-        opts = trade_client.get_option_contracts(req2).option_contracts
-        if len(opts) < 5:
-            time.sleep(1)
-            opts = trade_client.get_option_contracts(req2).option_contracts
     return opts
 
 # Track open spreads
@@ -181,13 +153,13 @@ def count_open_spreads():
     try:
         with open(OPEN_LOG, newline="") as f:
             return len(list(csv.reader(f))) - 1
-    except:
+    except Exception:
         return 0
 
 
 def log_open(symbol, short_str, long_str, credit, width):
     with open(OPEN_LOG, "a", newline="") as f:
-        csv.writer(f).writerow([symbol, short_str, long_str, credit, width, datetime.now(TIMEZONE).isoformat()])
+            csv.writer(f).writerow([symbol, short_str, long_str, credit, width, datetime.now(TIMEZONE).isoformat()])
 
 # End-of-day cancel
 def cancel_eod():
@@ -205,8 +177,13 @@ def cancel_eod():
 
 # Execute trade
 def trade(symbol, spot):
-    if count_open_spreads() >= MAX_OPEN_SPREADS:
-        log(f"Max open spreads reached, skipping {symbol}")
+    # Enforce dynamic max spreads based on cash balance
+    acct = trade_client.get_account()
+    cash = float(acct.cash)
+    max_spreads = min(MAX_OPEN_SPREADS, int(cash // MAX_RISK_PER_TRADE))
+    current_spreads = count_open_spreads()
+    if current_spreads >= max_spreads:
+        log(f"Max open spreads reached ({current_spreads}/{max_spreads}), skipping {symbol}")
         return
     opts = get_0dte_options(symbol)
     short_put = long_put = None
@@ -231,7 +208,8 @@ def trade(symbol, spot):
         return
     credit = short_put[1] - long_put[1]
     width = abs(float(short_put[0].strike_price) - float(long_put[0].strike_price))
-    if credit < MIN_CREDIT_PCT * width or width * 100 > MAX_RISK_PER_TRADE:
+    min_credit = max(MIN_CREDIT_PCT * width, ABS_MIN_CREDIT)
+    if credit < min_credit or width * 100 > MAX_RISK_PER_TRADE:
         return
     order = LimitOrderRequest(
         qty=1,
