@@ -7,7 +7,7 @@ import time
 import argparse
 import requests
 import numpy as np
-from datetime import datetime, date, time as dt_time
+from datetime import datetime, date, time as dt_time, timedelta
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 import smtplib
@@ -143,6 +143,7 @@ def get_0dte_options(sym):
         return []
     lo, hi = str(spot * (1 - STRIKE_RANGE)), str(spot * (1 + STRIKE_RANGE))
     today = date.today()
+    # First attempt: same-day expiry
     req = GetOptionContractsRequest(
         underlying_symbols=[sym],
         strike_price_gte=lo,
@@ -156,6 +157,23 @@ def get_0dte_options(sym):
     if len(opts) < 5:
         time.sleep(1)
         opts = trade_client.get_option_contracts(req).option_contracts
+    # Fallback to next-day expiry if no same-day options
+    if not opts:
+        fallback_date = today + timedelta(days=1)
+        log(f"[{sym}] No same-day expirations on {today}, falling back to {fallback_date}")
+        req2 = GetOptionContractsRequest(
+            underlying_symbols=[sym],
+            strike_price_gte=lo,
+            strike_price_lte=hi,
+            expiration_date=fallback_date,
+            status=AssetStatus.ACTIVE,
+            root_symbol=sym,
+            type=ContractType.PUT
+        )
+        opts = trade_client.get_option_contracts(req2).option_contracts
+        if len(opts) < 5:
+            time.sleep(1)
+            opts = trade_client.get_option_contracts(req2).option_contracts
     return opts
 
 # Track open spreads
