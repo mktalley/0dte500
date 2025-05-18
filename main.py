@@ -43,12 +43,12 @@ TIMEZONE = ZoneInfo("America/New_York")
 CANCEL_TIME = dt_time(15, 30)  # 3:30 PM EST
 
 # Static tickers
-TICKERS = ["SPY", "QQQ", "DIA"]
+TICKERS = ["SPY", "QQQ", "DIA", "IWM"]
 
 # CLI args
 parser = argparse.ArgumentParser("0DTE Trading Bot")
 parser.add_argument("--dry-run", action="store_true", dest="dry_run", help="Dry-run: no orders or cancels")
-args = parser.parse_args()
+args, unknown = parser.parse_known_args()
 DRY_RUN = args.dry_run
 
 # Alpaca clients
@@ -177,6 +177,10 @@ def cancel_eod():
 
 # Execute trade
 def trade(symbol, spot):
+    now = datetime.now(TIMEZONE)
+    # Early exit if after cutoff time
+    if now.time() >= CANCEL_TIME:
+        return
     # Enforce dynamic max spreads based on cash balance
     acct = trade_client.get_account()
     cash = float(acct.cash)
@@ -239,17 +243,21 @@ def trade(symbol, spot):
         send_alert("Order Failed", f"{symbol}: {e}")
 
 # Main loop
-log("🟢 Bot started")
-while True:
-    now = datetime.now(TIMEZONE)
-    if is_market_open():
-        if now.time() >= CANCEL_TIME:
-            cancel_eod()
-        prices = get_prices(TICKERS)
-        for sym, sp in prices.items():
-            trade(sym, sp)
-        log(f"Sleeping {SCAN_INTERVAL}s")
-        time.sleep(SCAN_INTERVAL)
-    else:
-        log("Market closed, sleeping 15m")
-        time.sleep(900)
+def main():
+    log("🟢 Bot started")
+    while True:
+        now = datetime.now(TIMEZONE)
+        if is_market_open():
+            if now.time() >= CANCEL_TIME:
+                cancel_eod()
+            prices = get_prices(TICKERS)
+            for sym, sp in prices.items():
+                trade(sym, sp)
+            log(f"Sleeping {SCAN_INTERVAL}s")
+            time.sleep(SCAN_INTERVAL)
+        else:
+            log("Market closed, sleeping 15m")
+            time.sleep(900)
+
+if __name__ == "__main__":
+    main()
