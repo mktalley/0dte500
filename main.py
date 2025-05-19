@@ -37,7 +37,7 @@ OI_THRESHOLD = 300
 SHORT_DELTA_RANGE = (-0.45, -0.35)
 LONG_DELTA_RANGE = (-0.25, -0.15)
 STRIKE_RANGE = 0.1
-SCAN_INTERVAL = 600  # seconds between scans
+SCAN_INTERVAL = 60  # seconds between scans (reduced from 600)
 TIMEZONE = ZoneInfo("America/Los_Angeles")  # Log timestamps in Pacific Time
 # Stop submissions at Alpaca's cutoff
 CANCEL_TIME = dt_time(15, 30)  # 3:30 PM EST
