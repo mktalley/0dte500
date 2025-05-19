@@ -175,6 +175,20 @@ def cancel_eod():
         except Exception as e:
             log(f"Cancel failed: {e}")
 
+
+# Purge unfilled limit orders at the start of each scan
+def purge_new_orders():
+    orders = trade_client.get_orders(status="new")
+    for o in orders:
+        try:
+            if not DRY_RUN:
+                trade_client.cancel_order_by_id(o.id)
+            with open(TRADE_LOG, "a", newline="") as f:
+                csv.writer(f).writerow([datetime.now(TIMEZONE).isoformat(), o.symbol, "", "", "", "", "cancelled_purge"])
+            log(f"Purged new order {o.id} for {o.symbol}")
+        except Exception as e:
+            log(f"Purge failed: {e}")
+
 # Execute trade
 def trade(symbol, spot):
     now = datetime.now(TIMEZONE)
@@ -250,6 +264,7 @@ def main():
         if is_market_open():
             if now.time() >= CANCEL_TIME:
                 cancel_eod()
+            purge_new_orders()
             prices = get_prices(TICKERS)
             for sym, sp in prices.items():
                 trade(sym, sp)
