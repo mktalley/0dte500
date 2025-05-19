@@ -181,7 +181,7 @@ def cancel_eod():
 
 # Purge unfilled limit orders at the start of each scan
 def purge_new_orders():
-    req = GetOrdersRequest(status=QueryOrderStatus.NEW)
+    req = GetOrdersRequest(status=QueryOrderStatus.OPEN)
     orders = trade_client.get_orders(req)
     for o in orders:
         try:
