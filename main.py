@@ -58,7 +58,7 @@ stock_data_client = StockHistoricalDataClient(API_KEY, API_SECRET)
 
 # Daily log files
 os.makedirs("logs", exist_ok=True)
-today_str = date.today().isoformat()
+today_str = datetime.now(TIMEZONE).date().isoformat()
 TRADE_LOG = f"logs/trade_log_{today_str}.csv"
 OPEN_LOG = f"logs/open_trades_{today_str}.csv"
 
