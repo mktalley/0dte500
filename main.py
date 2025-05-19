@@ -14,8 +14,8 @@ from scipy.stats import norm
 from scipy.optimize import brentq
 
 from alpaca.trading.client import TradingClient
-from alpaca.trading.enums import OrderSide, OrderClass, TimeInForce, AssetStatus, ContractType
-from alpaca.trading.requests import GetOptionContractsRequest, OptionLegRequest, LimitOrderRequest
+from alpaca.trading.enums import OrderSide, OrderClass, TimeInForce, AssetStatus, ContractType, QueryOrderStatus
+from alpaca.trading.requests import GetOptionContractsRequest, OptionLegRequest, LimitOrderRequest, GetOrdersRequest
 from alpaca.data.historical.option import OptionHistoricalDataClient
 from alpaca.data.historical.stock import StockHistoricalDataClient, StockLatestTradeRequest
 from alpaca.data.requests import OptionLatestQuoteRequest
@@ -51,6 +51,9 @@ parser.add_argument("--dry-run", action="store_true", dest="dry_run", help="Dry-
 args, unknown = parser.parse_known_args()
 DRY_RUN = args.dry_run
 
+
+# Flag for pattern-day-trading block
+PATTERN_BLOCKED = False
 # Alpaca clients
 trade_client = TradingClient(API_KEY, API_SECRET, paper=PAPER)
 option_data_client = OptionHistoricalDataClient(API_KEY, API_SECRET)
@@ -178,7 +181,8 @@ def cancel_eod():
 
 # Purge unfilled limit orders at the start of each scan
 def purge_new_orders():
-    orders = trade_client.get_orders(status="new")
+    req = GetOrdersRequest(status=QueryOrderStatus.NEW)
+    orders = trade_client.get_orders(req)
     for o in orders:
         try:
             if not DRY_RUN:
